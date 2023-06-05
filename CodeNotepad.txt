@@ -1,0 +1,378 @@
+//Variables to edit and find estimates by user
+const int SI = 5; //Speed increment for motors, preventing sudden high acceleration
+const int PR = 5; //PulleyRadius
+const int CS = 100; //ConveyorSpeed
+const int VP = 200; //VacuumPressure
+const int HEEDV = 150; //HorizontalEndEffectorDisplacementVelocity
+const int VEEDV = 150; //VerticalEndEffectorDisplacementVelocity
+
+int PinA3 = 3; //Pin to detect when end effector has reached the product with push-button
+int PinA4 = 4; //Pin to detect when end effector is in origin for X-axis with push-button
+int PinA5 = 5; //Pin to detect when end effector is in origin for Y-axis with push-button 
+
+int Enc2 = 2; //These are the pins for the encoder in the horizontal motor for end effector
+int Enc3 = 3; //These are the pins for the encoder in the horizontal motor for end effector
+
+int Enc7 = 7; //These are the pins for the encoder in the vertical motor for end effector
+int Enc8 = 8; //These are the pins for the encoder in the vertical motor for end effector
+
+int Pin4 = 4; //This is the pin to rotate the conveyor motor with PMW
+
+int Pin9 = 9; // Trigger signal for ultrasonic sensor
+int Pin10 = 10; //Echo signal for ultrasonic sensor
+
+int Pin13 = 13; //Pin to turn on vacuum motor on end effector with PMW
+
+int Pin6 = 6; // These are the pins to rotate the horizontal motor for end effector with PMW
+int Pin11 = 11; // These are the pins to rotate the horizontal motor for end effector with PMW
+
+int Pin5 = 5; // These are the pins to rotate the vertical motor for end effector with PMW
+int Pin12 = 12; // These are the pins to rotate the vertical motor for end effector with PMW
+
+float ObjectDistance; // To detect position of object in cm
+
+bool EndEffectorHome = false; // To indicate if end effector is placed in home position
+
+float HorizontalEndEffectorDisplacement; //End effector horizontal linear displacement in cm
+float VerticalEndEffectorDisplacement; //End effector vertical linear displacement in cm
+
+volatile float CountInterrupts; //To count the encoder interrupts
+volatile float HorizontalInterrupt; //To store horizontal interrupts count
+volatile float VerticalInterrupt; //To store vertical count interrupts count
+int PreviousCount = 0;
+
+int ConveyorProcess = 0; //The variable that will go through the switch case
+
+//Delay variables
+static unsigned long previousMillis = 0;  
+unsigned long currentMillis = millis();
+int interval1000 = 1000;
+int interval500 = 500;
+
+void setup() {
+  
+//Setting encoder pins
+pinMode(Enc2, INPUT_PULLUP); //Preparing encoder pin for end effector movement
+pinMode(Enc3, INPUT_PULLUP); //Preparing encoder pin for end effector movement
+pinMode(Enc7, INPUT_PULLUP); //Preparing encoder pin for end effector movement
+pinMode(Enc8, INPUT_PULLUP); //Preparing encoder pin for end effector movement
+
+//Setting interrupt functions  
+attachInterrupt(digitalPinToInterrupt(Enc2), ChannellMotor1, CHANGE); //Interrupt function
+attachInterrupt(digitalPinToInterrupt(Enc3), Channel2Motor1, CHANGE); //Interrupt function
+attachInterrupt(digitalPinToInterrupt(Enc7), ChannellMotor2, CHANGE); //Interrupt function
+attachInterrupt(digitalPinToInterrupt(Enc8), Channel2Motor2, CHANGE); //Interrupt function
+
+Serial.begin(9600);
+}
+
+void loop() {
+
+//Closed loop control
+CheckEndEffectorOrigin();  
+  
+//Open loop control  
+switch (ConveyorProcess){
+  case 0: 
+  GoodDelay1000();//To wait a bit before initialize, preventing sudden high acceleration on motors
+  case 1: // Everything is stopped until an object is placed in a conveyor
+  UltrasonicSensor1();
+  break;
+  case 2: // Activate conveyor and sense object under the end effector
+  ConveyorOn(CS); 
+  UltrasonicSensor2(); 
+  break;
+  case 3: // To stop conveyor and activate horizontal end effector movement
+  ConveyorStop(); 
+  HorizontalEndEffectorMotor(HEEDV, PR);
+  break;
+  case 4: // To activate vertical end effector movement
+  VerticalEndEffectorMotorDownwards(VEEDV, PR);
+  break;
+  case 5: // To activate vacuum and retract vertical end effector
+  VacuumON(VP);
+  break;
+  case 6:
+  GoodDelay500(); //To wait a bit before retrating the end effector
+  break;
+  case 7:
+  VerticalEndEffectorMotorUpwards(VEEDV);
+  break;
+  case 8:
+  HorizontalEndEffectorMotorRetract(HEEDV);
+  break;
+  case 9:
+  VacuumOFF();
+  break;
+}
+}
+
+// Close-loop control to check if end effector is in home position for X-axis and Y-axis
+void CheckEndEffectorOrigin (){
+  bool buttonstate_X;
+  bool buttonstate_Y;
+
+  if ((ConveyorProcess == 1) or (ConveyorProcess == 2) or (ConveyorProcess == 3)){  
+  
+      buttonstate_X = digitalRead(PinA4);
+      buttonstate_Y = digitalRead(PinA5);
+    
+      // Checking if both buttons are being pressed, indicating home position
+      if ((buttonstate_X == HIGH) and (buttonstate_Y == HIGH)){
+      EndEffectorHome = true;
+      }
+    
+    if (buttonstate_X == false){ 
+    digitalWrite(Pin11, HIGH); //Moving hand gripper to X-axis origin
+    digitalWrite(Pin6, LOW); 
+    EndEffectorHome = false;
+    } else {
+    digitalWrite(Pin11, LOW);
+    digitalWrite(Pin6, LOW);
+    }
+
+     if (buttonstate_Y == false){
+     digitalWrite(Pin12, HIGH); //Moving hand gripper to Y-axis origin
+     digitalWrite(Pin5, LOW);
+     EndEffectorHome = false;
+    } else {
+     digitalWrite(Pin12, LOW);
+     digitalWrite(Pin5, LOW);
+   }
+
+       }else{ //If ConveyorProcess >= 4
+      EndEffectorHome = true;
+ }  
+} 
+
+// To wait initialization, and to delay end effector retracting for one second (1000 ms)
+ void GoodDelay1000(){
+  
+  Serial.println("Program will start shortly...");   
+  if (currentMillis - previousMillis >= interval1000){
+   previousMillis = 0;
+   ConveyorProcess = 1; //To go through the next step in the switch case
+  }
+}
+ 
+   
+
+//To sense object nad further activate conveyor
+void UltrasonicSensor1(){
+ pinMode(Pin9, OUTPUT); // This pin will trigger the ultrasonic signal
+ pinMode(Pin10, INPUT); // This pin will receive the ultrasonic dignal
+  
+  if (EndEffectorHome == true) {
+    digitalWrite(Pin9, HIGH);} // To send ultrasonic signals
+
+ digitalWrite(Pin9, LOW); // The trigger pin will be off after the set delay
+ long duration = pulseIn(Pin10, HIGH); // The receiving pin will be on to sense the signal
+ ObjectDistance = (duration/2)/29.1; 
+  
+ // Conveyor will remain off until an object is placed into the 
+ //designated range (10 to 11cm from the ultrasonic sensor)
+ if ((ObjectDistance > 11) or (ObjectDistance < 10)){
+  Serial.println("No object introduced"); // Conveyor won't start
+  }else if ((ObjectDistance <= 11) and (ObjectDistance >= 10)) {
+  Serial.print("Object detected in ");
+  Serial.print(ObjectDistance);
+  Serial.println("cm. Activating conveyor"); 
+  ConveyorProcess = 2; // Moving to next case, which activates the conveyor  
+ }
+}
+
+//To rotate conveyor motor in a provided speed from 0 to 255
+void ConveyorOn(int ConveyorSpeed) {
+      
+  if (EndEffectorHome == true){
+    IncrementMotorSpeed(ConveyorSpeed, Pin4); // To slowly increase the conveyor speed
+  } else {
+    analogWrite(Pin4, LOW);
+  }
+}
+
+//To sense object and further stop conveyor
+void UltrasonicSensor2(){
+ pinMode(Pin9, OUTPUT); // This pin will trigger the ultrasonic signal
+ pinMode(Pin10, INPUT); // This pin will receive the ultrasonic dignal
+  
+  if (EndEffectorHome == true) {
+    digitalWrite(Pin9, HIGH);} // To send ultrasonic signals
+
+ digitalWrite(Pin9, LOW); // The trigger pin will be off after the set delay
+ long duration = pulseIn(Pin10, HIGH); // The receiving pin will be on to sense the signal
+ ObjectDistance = (duration/2)/29.1; 
+  
+ // Conveyor will remain off until an object is placed into the 
+ //designated range (210 to 211cm from the ultrasonic sensor)
+ if ((ObjectDistance > 211) or (ObjectDistance < 210)){
+  Serial.println("No object detected to collect"); // Conveyor won't stop
+  }else if ((ObjectDistance <= 211) and (ObjectDistance >= 210)) {
+  Serial.print("Object detected in ");
+  Serial.print(ObjectDistance);
+  Serial.println("cm. Stopping conveyor"); 
+  Serial.println("Initiating item collection"); 
+  ConveyorProcess = 3; // Moving stops the conveyor and activates the grip
+ }
+}
+
+//To stop conveyor motor
+void ConveyorStop() {
+  digitalWrite(Pin4, LOW);
+}
+
+//Function to move the end effector horizontally
+void HorizontalEndEffectorMotor(int HorizontalEndEffectorDisplacementVelocity, int PulleyRadius){
+ pinMode(Pin6, OUTPUT);  
+ pinMode(Pin11, INPUT); 
+ 
+ analogWrite(Pin11, LOW);
+ 
+ IncrementMotorSpeed(HorizontalEndEffectorDisplacementVelocity,Pin6); // Moving grip to the side
+    
+ //Pimoroni motor uses 50:1 gearbox. This means the encoder has 50 interrupts per revolution
+ //However, for the shaft to have a full revolution, the encoder must have 600 interrupts,
+ // which is 12 full encoder revolutions
+ const int EncoderFullRevolution = 600; //Move to top
+ // To convert from encoder value to radians and to linear displacement in mm
+ HorizontalEndEffectorDisplacement = PulleyRadius*(2.00*3.1415*CountInterrupts/ EncoderFullRevolution);
+  
+ if (HorizontalEndEffectorDisplacement < ObjectDistance){ 
+  Serial.print("Grip horizontal position: ");
+  Serial.print(HorizontalEndEffectorDisplacement);
+  Serial.println(" cm");
+  Serial.println(CountInterrupts);
+ }else{ 
+  HorizontalInterrupt = CountInterrupts; //To store value
+  CountInterrupts = 0; 
+  analogWrite(Pin6, LOW); // Stopping grip horizontal movement
+  ConveyorProcess = 4; //To go through the next step in the switch case
+  }
+}
+
+//Function to move the end effector approximately 50mm downwards
+ void VerticalEndEffectorMotorDownwards(int VerticalEndEffectorDisplacementVelocity, int PulleyRadius){ 
+
+ bool GripperOnObject = digitalRead(PinA3); // Hand gripper will move downwards until it touches the object, detected by the push-button
+   
+ IncrementMotorSpeed(VerticalEndEffectorDisplacementVelocity, Pin5); // Moving grip downwards
+ analogWrite(Pin12, LOW);
+ 
+ //Pimoroni motor uses 50:1 gearbox. This means the encoder has 50 interrupts per revolution
+ //However, for the shaft to have a full revolution, the encoder must have 600 interrupts,
+ // which is 12 full encoder revolutions
+ float EncoderFullRevolution = 600;
+ // To convert from encoder value to radians and to linear displacement in mm
+ VerticalEndEffectorDisplacement = PulleyRadius*(2*3.1415*CountInterrupts/ EncoderFullRevolution);
+  
+ if (GripperOnObject == false){ 
+  Serial.print("Moving end effector downwards: ");
+  Serial.print(VerticalEndEffectorDisplacement);
+  Serial.println(" cm");
+  Serial.println(CountInterrupts);
+ }else{ 
+  VerticalInterrupt = CountInterrupts; 
+  analogWrite(Pin5, LOW); // Stopping grip vertical movement
+  ConveyorProcess = 5; //To go through the next step in the switch case
+  } 
+}
+
+//Function to activate vacuum
+ void VacuumON(int VacuumPressure){
+ IncrementMotorSpeed(VacuumPressure, Pin13);;
+ Serial.println("Vacuum initiated");  
+ ConveyorProcess = 6; //To go through the next step in the switch case
+}
+
+// To delay end effector retracting for 0.5 seconds (500 ms)
+ void GoodDelay500(){
+
+  if (currentMillis - previousMillis >= interval500){
+   previousMillis = currentMillis;
+   ConveyorProcess = 7; //To go through the next step in the switch case
+  }
+}
+
+//Function to retract the end effector upwards
+ void VerticalEndEffectorMotorUpwards(int VerticalEndEffectorDisplacementVelocity){
+   
+  bool buttonstate_Y = digitalRead(PinA5);
+   
+  IncrementMotorSpeed(VerticalEndEffectorDisplacementVelocity, Pin12); // Moving grip upwards until reaching home position in Y-axis
+  analogWrite(Pin5, LOW);
+  Serial.println("Retracting upwards");
+   if (buttonstate_Y == true){  
+    ConveyorProcess = 8; //To go through the next step in the switch case
+   }
+}
+
+
+//Function to retract the end effector horizontally
+void HorizontalEndEffectorMotorRetract(int HorizontalEndEffectorDisplacementVelocity){
+  
+  bool buttonstate_X = digitalRead(PinA4);
+   
+  analogWrite(Pin6, LOW); 
+  IncrementMotorSpeed(HorizontalEndEffectorDisplacementVelocity, Pin11); // Moving grip to home position
+  Serial.println("Retracting to home position");
+   if (buttonstate_X == true){  
+    ConveyorProcess = 9; //To go through the next step in the switch case
+   }
+}
+
+ void VacuumOFF(){
+ digitalWrite(Pin13, LOW);
+ ConveyorProcess = 0; //To restart the process
+}
+
+
+//This function is to slowly increase the motor speed from zero to desired value
+void IncrementMotorSpeed(int TargetSpeed, int CurrentPin){
+  int CurrentSpeed = 0; //The variable that will control the speed motor
+  previousMillis = 0;
+  
+  while(CurrentSpeed < TargetSpeed) { //The loop will continue until reaching target spped
+   if (currentMillis - previousMillis >= 100){
+       analogWrite(CurrentPin, CurrentSpeed); //Assigning speed value to the motor
+       previousMillis = currentMillis;
+         CurrentSpeed = CurrentSpeed + SI; //To slowly increment the motor speed
+    }
+  }
+}
+  
+
+//This function to be called only by the attachInterrupt function
+void ChannellMotor1() {
+  if (digitalRead(Enc2) != digitalRead(Enc3)) {
+    CountInterrupts++;
+  } else {
+    CountInterrupts--;
+  }
+}
+
+//This function to be called only by the attachInterrupt function
+void Channel2Motor1() {
+  if (digitalRead(Enc2) != digitalRead(Enc3)) {
+    CountInterrupts--;
+  } else {
+    CountInterrupts++;
+  }
+}
+
+//This function to be called only by the attachInterrupt function
+void ChannellMotor2() {
+  if (digitalRead(Enc7) != digitalRead(Enc8)) {
+    CountInterrupts++;
+  } else {
+    CountInterrupts--;
+  }
+}
+
+//This function to be called only by the attachInterrupt function
+void Channel2Motor2() {
+  if (digitalRead(Enc7) != digitalRead(Enc8)) {
+    CountInterrupts--;
+  } else {
+    CountInterrupts++;
+  }
+}
